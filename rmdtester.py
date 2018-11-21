@@ -111,7 +111,7 @@ class CacheAllocator(object):
         cpumap = defaultdict(list)
         for i in range(int(S.getValue('WL_VM_COUNT')) +
                        int(S.getValue('WL_PROCESS_COUNT'))):
-            cpumap['WL' + str(i)] = S.getValue['WL_CORE_BINDING'][i]
+            cpumap['WL' + str(i)] = S.getValue('WL_CORE_BINDING')[i]
         self.irmd_manager.setup_cacheways(cpumap)
 
     def cleanup_llc_allocation(self):
@@ -145,6 +145,9 @@ class QemuVM(tasks.Process):
         self._running = False
         self._logger = logging.getLogger(__name__)
         self._number = index
+        self._logfile = os.path.join(
+            S.getValue('LOG_DIR'),
+            S.getValue('LOG_FILE_QEMU')) + str(self._number)
         pnumber = int(S.getValue('BASE_VNC_PORT')) + self._number
         cpumask = ",".join(S.getValue('WL_CORE_BINDING')[self._number])
         self._monitor = '%s/vm%dmonitor' % ('/tmp', pnumber)
@@ -170,7 +173,12 @@ class QemuVM(tasks.Process):
                      self.image, '-boot',
                      'c', '--enable-kvm',
                      '-monitor', 'unix:%s,server,nowait' % self._monitor,
-                     '-numa', 'node,memdev=mem -mem-prealloc',
+                     # '-object',
+                     # 'memory-backend-file,id=mem,size=' +
+                     # str(S.getValue('WL_MEMORY')[self._number]) + 'M,' +
+                     # 'mem-path=' + S.getValue('HUGEPAGE_DIR') + ',share=on',
+                     #'-numa', 'node,memdev=mem -mem-prealloc',
+                     '-numa', 'node -mem-prealloc',
                      '-nographic', '-vnc', str(vnc), '-name', name,
                      '-snapshot', '-net none', '-no-reboot',
                      '-drive',
@@ -200,6 +208,7 @@ class QemuVM(tasks.Process):
         """
         Start QEMU instance
         """
+        print(self._cmd)
         super(QemuVM, self).start()
         self._running = True
 

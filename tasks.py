@@ -235,6 +235,8 @@ class Process(object):
     def _start_process(self):
         """Start process instance.
         """
+        print(self._cmd)
+        print(settings.getValue('SHELL_CMD'))
         cmd = ' '.join(settings.getValue('SHELL_CMD') +
                        ['"%s"' % ' '.join(self._cmd)])
 
