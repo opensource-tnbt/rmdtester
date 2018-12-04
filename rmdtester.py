@@ -4,9 +4,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import resthttp
 import socket
 import tasks
+import subprocess
+import locale
 from conf import settings as S
 from collections import defaultdict
 
@@ -21,7 +24,6 @@ class IrmdHttp(object):
     """
     Intel RMD ReST API wrapper object
     """
-
     def __init__(self, server=None, port=None, api_version=None):
         if not port:
             server = DEFAULT_SERVER
@@ -208,7 +210,7 @@ class QemuVM(tasks.Process):
         """
         Start QEMU instance
         """
-        print(self._cmd)
+        # print(self._cmd)
         super(QemuVM, self).start()
         self._running = True
 
@@ -229,6 +231,72 @@ class QemuVM(tasks.Process):
 
     def print_cmd(self):
         print(self._cmd)
+
+    def affinitize_workload(self):
+        """
+        Affinitize workload thread.
+
+        :return: None
+        """
+        #self._logger.info('Affinitizing Workload threads.')
+        args1 = ['pgrep', 'qemu-']
+        process1 = subprocess.Popen(args1, stdout=subprocess.PIPE,
+                                    shell=False)
+        out = process1.communicate()[0]
+        processes = out.decode(locale.getdefaultlocale()[1]).split('\n')
+        if processes[-1] == '':
+            processes.pop() # pgrep may return an extra line with no data
+        #self._logger.info('Found %s workload threads...', len(processes))
+        print('Found %s workload threads...', len(processes))
+
+        cpumap = S.getValue('WL'+str(self._number)+'_CPU_MAP')
+        mapcount = 0
+        for proc in processes:
+            self._affinitize_pid(cpumap[mapcount], proc)
+            mapcount += 1
+            if mapcount + 1 > len(cpumap):
+                # Not enough cpus were given in the mapping to cover all the
+                # threads on a 1 to 1 ratio with cpus so reset the list counter
+                #  to 0.
+                mapcount = 0
+
+    def _affinitize(self):
+        """
+        Affinitize the SMP cores of a QEMU instance.
+
+        This is a bit of a hack. The 'socat' utility is used to
+        interact with the QEMU HMP. This is necessary due to the lack
+        of QMP in older versions of QEMU, like v1.6.2. In future
+        releases, this should be replaced with calls to libvirt or
+        another Python-QEMU wrapper library.
+
+        :returns: None
+        """
+        thread_id = (r'.* CPU #%d: .* thread_id=(\d+)')
+
+        print('Affinitizing guest...')
+
+        cur_locale = locale.getdefaultlocale()[1]
+        proc = subprocess.Popen(
+            ('echo', 'info cpus'), stdout=subprocess.PIPE)
+        output = subprocess.check_output(
+            ('sudo', 'socat', '-', 'UNIX-CONNECT:%s' % self._monitor),
+            stdin=proc.stdout)
+        proc.wait()
+
+        # calculate the number of CPUs in SMP topology specified by GUEST_SMP
+        # e.g. "sockets=2,cores=3", "4", etc.
+        cpu_nr = 4
+        # pin each GUEST's core to host core based on configured BINDING
+        for cpu in range(0, cpu_nr):
+            match = None
+            guest_thread_binding = S.getValue('WL_CORE_BINDING')[self._number]
+            for line in output.decode(cur_locale).split('\n'):
+                match = re.search(thread_id % cpu, line)
+                if match:
+                    self._affinitize_pid(guest_thread_binding[cpu], match.group(1))
+                    break
+
 
 
 class StressorVM(object):
@@ -253,6 +321,23 @@ class StressorVM(object):
         vm = self.qvm_list[index]
         vm.print_cmd()
 
+    def affinitize(self, index):
+        """
+        Affinitize the SMP cores of a QEMU instance.
+        """
+        vm = self.qvm_list[index]
+        vm._affinitize()
+
+    def affinitize_workload(self, index):
+        """
+        Affinitize workload thread.
+
+        :return: None
+        """
+        vm = self.qvm_list[index]
+        vm.affinitize_workload()
+        
+
 
 def main():
     # configure settings
@@ -261,14 +346,22 @@ def main():
     cachecontrol = CacheAllocator()
     input("Press Enter to start workload-1")
     vmcontrol.start(0)
-    input("Press Enter to perform cache allocation")
-    cachecontrol.setup_llc_allocation()
+    input("Enter to affinitize workload")
+    vmcontrol.affinitize(0)
+    #input("Press Enter to stop workload-1")
+    #vmcontrol.stop(0)
     input("Press Enter to start workload-2")
     vmcontrol.start(1)
+    input("Enter to affinitize workload")
+    vmcontrol.affinitize(1)    
+    input("Press Enter to perform cache allocation")
+    cachecontrol.setup_llc_allocation()
+#    input("Press Enter to start workload-1")
+#    vmcontrol.start(0)
     input("Press Enter to stop workload-2")
-    vmcontrol.stop(0)
-    input("Press Enter to stop workload-1")
     vmcontrol.stop(1)
+    input("Press Enter to stop workload-1")
+    vmcontrol.stop(0)
     input("Press Enter to cleanup allocations")
     cachecontrol.cleanup_llc_allocation()
     print("RMD-Testing is done, Goodbye!")
